@@ -1,0 +1,12 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Env
+.env
+
+# Uploads (VERY IMPORTANT)
+uploads/
+
+# OS
+.DS_Store
