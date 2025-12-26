@@ -217,27 +217,53 @@ function App() {
   // ================= UI =================
   return (
     <div
-      style={{ maxWidth: 820, margin: "40px auto", fontFamily: "sans-serif" }}
+      style={{
+        maxWidth: 900,
+        margin: "20px auto",
+        padding: "0 16px",
+        fontFamily: "sans-serif",
+      }}
     >
-      <h2>📦 Large File Uploader</h2>
-      <input type="file" onChange={handleFileChange} />
-      <br />
-      <br />
-      <button onClick={initUpload} disabled={!file || isUploading}>
-        Init
-      </button>{" "}
-      <button onClick={uploadChunks} disabled={!uploadId || isUploading}>
-        Start
-      </button>{" "}
-      <button onClick={pauseUpload} disabled={!isUploading}>
-        Pause
-      </button>{" "}
-      <button onClick={resumeUpload} disabled={!isPaused}>
-        Resume
-      </button>
-      <br />
-      <br />
-      <div style={{ border: "1px solid #ccc", height: 22 }}>
+      <h2 style={{ textAlign: "center" }}>📦 Large File Uploader</h2>
+
+      {/* File Picker */}
+      <div style={{ marginBottom: 16 }}>
+        <input type="file" onChange={handleFileChange} />
+      </div>
+
+      {/* Controls */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 10,
+          marginBottom: 20,
+        }}
+      >
+        <button onClick={initUpload} disabled={!file || isUploading}>
+          Init
+        </button>
+        <button onClick={uploadChunks} disabled={!uploadId || isUploading}>
+          Start
+        </button>
+        <button onClick={pauseUpload} disabled={!isUploading}>
+          Pause
+        </button>
+        <button onClick={resumeUpload} disabled={!isPaused}>
+          Resume
+        </button>
+      </div>
+
+      {/* Progress Bar */}
+      <div
+        style={{
+          border: "1px solid #ccc",
+          height: 22,
+          borderRadius: 4,
+          overflow: "hidden",
+          marginBottom: 10,
+        }}
+      >
         <div
           style={{
             height: "100%",
@@ -247,32 +273,50 @@ function App() {
           }}
         />
       </div>
-      <p>
-        <b>Progress:</b> {progress.toFixed(2)}%
-      </p>
-      <p>
-        <b>Speed:</b> {(speed / (1024 * 1024)).toFixed(2)} MB/s
-      </p>
-      <p>
-        <b>ETA:</b> {eta ? eta.toFixed(1) : 0}s
-      </p>
-      <h3>Chunk Status</h3>
+
+      {/* Stats */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 16,
+          fontSize: 14,
+          marginBottom: 20,
+        }}
+      >
+        <div>
+          <b>Progress:</b> {progress.toFixed(2)}%
+        </div>
+        <div>
+          <b>Speed:</b> {(speed / (1024 * 1024)).toFixed(2)} MB/s
+        </div>
+        <div>
+          <b>ETA:</b> {eta ? eta.toFixed(1) : 0}s
+        </div>
+      </div>
+
+      {/* Chunk Status */}
+      <h3 style={{ marginBottom: 10 }}>Chunk Status</h3>
+
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(10, 1fr)",
+          gridTemplateColumns: "repeat(auto-fit, minmax(24px, 1fr))",
           gap: 6,
+          maxHeight: 300,
+          overflowY: "auto",
+          paddingBottom: 10,
         }}
       >
         {Object.entries(chunkStatus).map(([i, status]) => {
           const color =
             status === "SUCCESS"
-              ? "green"
+              ? "#4caf50"
               : status === "UPLOADING"
-              ? "blue"
+              ? "#2196f3"
               : status === "ERROR"
-              ? "red"
-              : "gray";
+              ? "#f44336"
+              : "#9e9e9e";
 
           return (
             <div
@@ -280,8 +324,8 @@ function App() {
               title={`Chunk ${i}: ${status}`}
               style={{
                 height: 20,
-                backgroundColor: color,
                 borderRadius: 4,
+                backgroundColor: color,
               }}
             />
           );
