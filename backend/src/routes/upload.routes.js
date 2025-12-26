@@ -1,17 +1,12 @@
 const express = require("express");
-const router = express.Router();
 const multer = require("multer");
+const controller = require("../controllers/upload.controller");
 
-const {
-  initUpload,
-  uploadChunk,
-  completeUpload,
-} = require("../controllers/upload.controller");
-
+const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-router.post("/init", initUpload);
-router.post("/chunk", upload.single("chunk"), uploadChunk);
-router.post("/complete", completeUpload);
+router.post("/init", controller.initUpload);
+router.post("/chunk", upload.single("chunk"), controller.uploadChunk);
+router.post("/complete", controller.completeUpload);
 
 module.exports = router;
