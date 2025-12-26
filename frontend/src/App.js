@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 
-const DEBUG = true; // 👈 TURN LOGS ON/OFF HERE
+const DEBUG = true;
+const log = (...args) => DEBUG && console.log(...args);
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 const MAX_CONCURRENT = 3;
@@ -8,7 +9,6 @@ const MAX_RETRIES = 3;
 const BASE_DELAY = 500;
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-const log = (...args) => DEBUG && console.log(...args);
 
 function App() {
   const [file, setFile] = useState(null);
@@ -16,30 +16,41 @@ function App() {
   const [uploadedChunks, setUploadedChunks] = useState([]);
   const [chunkStatus, setChunkStatus] = useState({});
   const [progress, setProgress] = useState(0);
-  const [speed, setSpeed] = useState(0);
-  const [eta, setEta] = useState(0);
-  const [isUploading, setIsUploading] = useState(false);
+  const [speed, setSpeed] = useState(0); // bytes/sec
+  const [eta, setEta] = useState(0); // seconds
 
-  const uploadedBytesRef = useRef(0);
-  const startTimeRef = useRef(0);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+
+  const pauseRef = useRef(false);
+  const completedChunksRef = useRef([]); // { time, size }
+  const retryQueueRef = useRef([]); // 🔑 failed chunks retry queue
 
   // ================= FILE PICK =================
   const handleFileChange = (e) => {
     const f = e.target.files[0];
-    log("File selected:", f?.name, f?.size);
+    if (!f) return;
+
+    log("File selected:", f.name, f.size);
+
     setFile(f);
+    setUploadId(null);
+    setUploadedChunks([]);
+    setChunkStatus({});
     setProgress(0);
     setSpeed(0);
     setEta(0);
-    uploadedBytesRef.current = 0;
-    setChunkStatus({});
+    setIsUploading(false);
+    setIsPaused(false);
+
+    pauseRef.current = false;
+    completedChunksRef.current = [];
+    retryQueueRef.current = [];
   };
 
   // ================= INIT =================
   const initUpload = async () => {
     if (!file) return alert("Select a file first");
-
-    log("Init upload request sent");
 
     const res = await fetch("http://localhost:4000/upload/init", {
       method: "POST",
@@ -58,22 +69,20 @@ function App() {
     setUploadedChunks(data.uploadedChunks);
 
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    const statusMap = {};
+
+    const status = {};
     for (let i = 0; i < totalChunks; i++) {
-      statusMap[i] = data.uploadedChunks.includes(i) ? "SUCCESS" : "PENDING";
+      status[i] = data.uploadedChunks.includes(i) ? "SUCCESS" : "PENDING";
     }
-    setChunkStatus(statusMap);
+    setChunkStatus(status);
+
+    setProgress((data.uploadedChunks.length / totalChunks) * 100);
   };
 
   // ================= SINGLE CHUNK =================
   const uploadSingleChunk = async (chunkIndex, attempt = 1) => {
     try {
-      log(`Uploading chunk ${chunkIndex}, attempt ${attempt}`);
-
-      setChunkStatus((prev) => ({
-        ...prev,
-        [chunkIndex]: "UPLOADING",
-      }));
+      setChunkStatus((p) => ({ ...p, [chunkIndex]: "UPLOADING" }));
 
       const start = chunkIndex * CHUNK_SIZE;
       const end = Math.min(file.size, start + CHUNK_SIZE);
@@ -89,49 +98,58 @@ function App() {
         body: formData,
       });
 
-      if (!res.ok) throw new Error("Network error");
-
+      if (!res.ok) throw new Error("Upload failed");
       await res.json();
-      log(`Chunk ${chunkIndex} uploaded successfully`);
 
-      uploadedBytesRef.current += chunk.size;
-      const elapsed = (Date.now() - startTimeRef.current) / 1000;
-      const currentSpeed = uploadedBytesRef.current / elapsed;
-      const remaining = file.size - uploadedBytesRef.current;
+      const now = Date.now();
+      completedChunksRef.current.push({ time: now, size: chunk.size });
+      completedChunksRef.current = completedChunksRef.current.filter(
+        (c) => now - c.time <= 5000
+      );
 
-      setSpeed(currentSpeed);
-      setEta(remaining / currentSpeed);
-      setProgress(Math.min(100, (uploadedBytesRef.current / file.size) * 100));
+      const bytesLast5Sec = completedChunksRef.current.reduce(
+        (sum, c) => sum + c.size,
+        0
+      );
+      setSpeed(bytesLast5Sec / 5);
 
-      setChunkStatus((prev) => ({
-        ...prev,
-        [chunkIndex]: "SUCCESS",
-      }));
+      setUploadedChunks((prev) => {
+        if (prev.includes(chunkIndex)) return prev;
+
+        const updated = [...prev, chunkIndex];
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+        setProgress((updated.length / totalChunks) * 100);
+
+        const chunksRemaining = totalChunks - updated.length;
+        const chunksPerSecond = completedChunksRef.current.length / 5 || 0.0001;
+
+        setEta(chunksRemaining / chunksPerSecond);
+        return updated;
+      });
+
+      setChunkStatus((p) => ({ ...p, [chunkIndex]: "SUCCESS" }));
     } catch (err) {
-      log(`Chunk ${chunkIndex} failed on attempt ${attempt}`, err);
+      log(`Chunk ${chunkIndex} failed attempt ${attempt}`);
 
       if (attempt >= MAX_RETRIES) {
-        setChunkStatus((prev) => ({
-          ...prev,
-          [chunkIndex]: "ERROR",
-        }));
-        throw err;
+        setChunkStatus((p) => ({ ...p, [chunkIndex]: "ERROR" }));
+        retryQueueRef.current.push(chunkIndex); // 🔑 retry later
+        return;
       }
 
-      const delay = BASE_DELAY * Math.pow(2, attempt - 1);
-      log(`Retrying chunk ${chunkIndex} after ${delay}ms`);
-      await sleep(delay);
+      await sleep(BASE_DELAY * Math.pow(2, attempt - 1));
       return uploadSingleChunk(chunkIndex, attempt + 1);
     }
   };
 
-  // ================= CONCURRENT UPLOAD =================
+  // ================= UPLOAD MANAGER =================
   const uploadChunks = async () => {
     if (!uploadId) return alert("Init upload first");
 
-    log("Starting concurrent upload");
     setIsUploading(true);
-    startTimeRef.current = Date.now();
+    setIsPaused(false);
+    pauseRef.current = false;
 
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     const pending = [];
@@ -145,26 +163,37 @@ function App() {
 
     return new Promise((resolve) => {
       const next = () => {
-        if (index >= pending.length && active === 0) {
-          log("All chunks uploaded");
+        if (pauseRef.current) return;
+
+        if (
+          index >= pending.length &&
+          retryQueueRef.current.length === 0 &&
+          active === 0
+        ) {
           setIsUploading(false);
-          alert("Upload completed");
           resolve();
           return;
         }
 
-        while (active < MAX_CONCURRENT && index < pending.length) {
-          const chunkIndex = pending[index++];
-          active++;
-          log("Starting chunk", chunkIndex, "active:", active);
+        while (active < MAX_CONCURRENT && !pauseRef.current) {
+          let chunkIndex;
 
-          uploadSingleChunk(chunkIndex)
-            .catch(() => {})
-            .finally(() => {
-              active--;
-              log("Finished chunk", chunkIndex, "active:", active);
-              next();
-            });
+          if (retryQueueRef.current.length > 0) {
+            chunkIndex = retryQueueRef.current.shift();
+            log("Retrying failed chunk:", chunkIndex);
+          } else if (index < pending.length) {
+            chunkIndex = pending[index++];
+          } else {
+            break;
+          }
+
+          if (uploadedChunks.includes(chunkIndex)) continue;
+
+          active++;
+          uploadSingleChunk(chunkIndex).finally(() => {
+            active--;
+            next();
+          });
         }
       };
 
@@ -172,42 +201,61 @@ function App() {
     });
   };
 
+  // ================= PAUSE / RESUME =================
+  const pauseUpload = () => {
+    pauseRef.current = true;
+    setIsPaused(true);
+    setIsUploading(false);
+  };
+
+  const resumeUpload = () => {
+    pauseRef.current = false;
+    setIsPaused(false);
+    uploadChunks();
+  };
+
   // ================= UI =================
   return (
-    <div style={{ padding: 40, maxWidth: 700 }}>
-      <h2>Large File Uploader</h2>
-
+    <div
+      style={{ maxWidth: 820, margin: "40px auto", fontFamily: "sans-serif" }}
+    >
+      <h2>📦 Large File Uploader</h2>
       <input type="file" onChange={handleFileChange} />
       <br />
       <br />
-
       <button onClick={initUpload} disabled={!file || isUploading}>
-        Init Upload
-      </button>
-      <br />
-      <br />
-
+        Init
+      </button>{" "}
       <button onClick={uploadChunks} disabled={!uploadId || isUploading}>
-        Upload Chunks
+        Start
+      </button>{" "}
+      <button onClick={pauseUpload} disabled={!isUploading}>
+        Pause
+      </button>{" "}
+      <button onClick={resumeUpload} disabled={!isPaused}>
+        Resume
       </button>
-
       <br />
       <br />
-
-      <div style={{ border: "1px solid #ccc", height: 20 }}>
+      <div style={{ border: "1px solid #ccc", height: 22 }}>
         <div
           style={{
             height: "100%",
             width: `${progress}%`,
-            backgroundColor: "#4caf50",
+            background: "#4caf50",
+            transition: "width 0.3s",
           }}
         />
       </div>
-
-      <p>Progress: {progress.toFixed(2)}%</p>
-      <p>Speed: {(speed / (1024 * 1024)).toFixed(2)} MB/s</p>
-      <p>ETA: {eta ? eta.toFixed(1) : 0} seconds</p>
-
+      <p>
+        <b>Progress:</b> {progress.toFixed(2)}%
+      </p>
+      <p>
+        <b>Speed:</b> {(speed / (1024 * 1024)).toFixed(2)} MB/s
+      </p>
+      <p>
+        <b>ETA:</b> {eta ? eta.toFixed(1) : 0}s
+      </p>
       <h3>Chunk Status</h3>
       <div
         style={{
@@ -216,8 +264,7 @@ function App() {
           gap: 6,
         }}
       >
-        {Object.keys(chunkStatus).map((i) => {
-          const status = chunkStatus[i];
+        {Object.entries(chunkStatus).map(([i, status]) => {
           const color =
             status === "SUCCESS"
               ? "green"
@@ -232,7 +279,6 @@ function App() {
               key={i}
               title={`Chunk ${i}: ${status}`}
               style={{
-                width: 20,
                 height: 20,
                 backgroundColor: color,
                 borderRadius: 4,
